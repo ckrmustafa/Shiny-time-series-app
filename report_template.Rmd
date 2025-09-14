@@ -1,0 +1,206 @@
+---
+title: "FR Prediction Analysis Report"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    code_folding: hide
+params:
+  analysis_results: null
+  settings: null
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.height = 6, fig.width = 10, message = FALSE, warning = FALSE)
+suppressPackageStartupMessages({
+  library(ggplot2); library(dplyr); library(tibble); library(knitr); library(purrr)
+})
+ar <- params$analysis_results
+st <- params$settings
+get2 <- function(x, path, default = NULL) tryCatch({ purrr::reduce(path, ~ .x[[.y]], .init = x) }, error = function(e) default)
+nz  <- function(x) !is.null(x) && length(x) > 0
+```
+
+# General Information
+
+- **Report Date/Time:** `r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`  
+- **Target Variable:** `r get2(ar, c("value_col_name"), "Target")`  
+- **Train Rows:** `r if (nz(ar$train_data)) nrow(ar$train_data) else NA_integer_`  
+- **Test Rows:** `r if (nz(ar$test_data))  nrow(ar$test_data)  else NA_integer_`  
+- **Models Included:** `r if (nz(ar$results)) paste(names(ar$results), collapse = ", ") else "—"`  
+- **Feature Selection Method:** `r get2(st, c("fs_method"), "—")`  
+- **Seed / Split / Folds / Lags:** `r paste0("set.seed=", get2(st,"seed","—"), " | split=", get2(st,"split","—"), " | K=", get2(st,"folds","—"), " | lags=", get2(st,"lags","—"))`  
+
+---
+
+# Data Summary
+
+```{r data-summary}
+summary_tbl <- tibble(
+  Set  = c("Train", "Test"),
+  Rows = c(if (nz(ar$train_data)) nrow(ar$train_data) else NA_integer_,
+           if (nz(ar$test_data))  nrow(ar$test_data)  else NA_integer_),
+  Cols = c(if (nz(ar$train_data)) ncol(ar$train_data) else NA_integer_,
+           if (nz(ar$test_data))  ncol(ar$test_data)  else NA_integer_)
+)
+kable(summary_tbl, caption = "Train/Test Data Dimensions")
+```
+
+```{r value-summary}
+val_name <- get2(ar, "value_col_name", "Target")
+orig_df  <- get2(ar, "actual_df_original_scale")
+if (nz(orig_df) && all(c("Time","Actual") %in% names(orig_df))) {
+  kable(as.data.frame(summary(orig_df$Actual)), col.names = "Summary",
+        caption = paste0("Target (", val_name, ") — Summary Statistics"))
+}
+```
+
+---
+
+# Exploratory Data Analysis (EDA)
+
+```{r ts-raw}
+if (nz(orig_df) && all(c("Time","Actual") %in% names(orig_df))) {
+  ggplot(orig_df, aes(Time, Actual)) + geom_line() +
+    labs(title = "Raw Time Series", x = "Time", y = val_name) +
+    theme_minimal(base_size = 14)
+}
+```
+
+```{r transformed-diagnostics}
+ts_bc <- get2(ar, "ts_data_bc")
+if (nz(ts_bc)) {
+  par(mfrow=c(1,2))
+  acf(as.numeric(ts_bc), main = "ACF (Box-Cox)")
+  pacf(as.numeric(ts_bc), main = "PACF (Box-Cox)")
+  par(mfrow=c(1,1))
+}
+```
+
+```{r transformed-hist-qq}
+if (nz(ts_bc)) {
+  par(mfrow=c(1,2))
+  hist(as.numeric(ts_bc), main = "Histogram (Box-Cox)", xlab = "Value")
+  qqnorm(as.numeric(ts_bc)); qqline(as.numeric(ts_bc), col="red")
+  par(mfrow=c(1,1))
+}
+```
+
+```{r corrplot}
+corr_plot <- get2(ar, "original_df_numcorr")
+if (nz(corr_plot)) print(corr_plot)
+```
+
+---
+
+# Time Series Models
+
+```{r arima-plot}
+arima_fc <- get2(ar, "arima_forecast_df"); arima_me <- get2(ar, "arima_metrics")
+if (nz(orig_df) && nz(arima_fc)) {
+  ggplot() +
+    geom_line(data = orig_df, aes(Time, Actual, color = "Actual"), size = 1) +
+    geom_line(data = arima_fc, aes(Time, Forecast, color = "Forecast"), linetype = "dashed") +
+    scale_color_manual(values = c("Actual"="black","Forecast"="blue"), name="") +
+    labs(title = paste0("ARIMA | RMSE: ", round(get2(arima_me,"rmse",NA),5),
+                        " | R²: ", round(get2(arima_me,"r2",NA),3)),
+         x = "Time", y = val_name) +
+    theme_minimal(base_size = 14)
+}
+```
+
+```{r tbats-plot}
+tbats_fc <- get2(ar, "tbats_forecast_df"); tbats_me <- get2(ar, "tbats_metrics")
+if (nz(orig_df) && nz(tbats_fc)) {
+  ggplot() +
+    geom_line(data = orig_df, aes(Time, Actual, color = "Actual"), size = 1) +
+    geom_line(data = tbats_fc, aes(Time, Forecast, color = "Forecast"), linetype = "dashed") +
+    scale_color_manual(values = c("Actual"="black","Forecast"="purple"), name="") +
+    labs(title = paste0("TBATS | RMSE: ", round(get2(tbats_me,"rmse",NA),5),
+                        " | R²: ", round(get2(tbats_me,"r2",NA),3)),
+         x = "Time", y = val_name) +
+    theme_minimal(base_size = 14)
+}
+```
+
+---
+
+# Machine Learning Models
+
+```{r ml-perf}
+perf_df <- get2(ar, "performance_df")
+if (nz(perf_df)) kable(perf_df, digits=4, caption = "Performance of All Models on Test Data")
+```
+
+```{r ml-preds, results='asis'}
+res <- get2(ar, "results")
+if (nz(res)) {
+  for (m in names(res)) {
+    act <- get2(res[[m]], "actual"); pred <- get2(res[[m]], "predictions")
+    if (nz(act) && nz(pred)) {
+      df <- tibble(Index = seq_along(act), Actual = as.numeric(act), Prediction = as.numeric(pred))
+      gg <- ggplot(df, aes(Index)) +
+        geom_line(aes(y=Actual, color="Actual"), size=0.8) +
+        geom_line(aes(y=Prediction, color="Prediction"), linetype="dashed", size=0.8) +
+        scale_color_manual(values=c("Actual"="black","Prediction"="steelblue"), name="") +
+        labs(title=m, x="Observation", y=val_name) + theme_minimal(base_size = 14)
+      print(gg)
+    }
+  }
+}
+```
+
+```{r lm-eq}
+lm_eq <- get2(ar, "lm_equation")
+if (nz(lm_eq)) { cat("**Linear Regression Equation:**  "); cat("`", lm_eq, "`") }
+```
+
+---
+
+# Feature Selection
+
+```{r fs}
+corr_info <- get2(st, "corr_fs_info"); if (nz(corr_info)) cat(corr_info)
+boruta_tbl  <- get2(st, "boruta_stats_tbl"); boruta_plot <- get2(st, "boruta_plot_obj")
+if (nz(boruta_tbl)) { if (nz(boruta_plot)) print(boruta_plot); kable(boruta_tbl, digits=4, caption="Boruta Feature Summary") }
+```
+
+---
+
+# Explainable AI (XAI)
+
+```{r shap-global}
+xai <- get2(ar, "xai_data")
+plot_imp_tbl <- function(tbl, title_txt) {
+  if (is.null(tbl) || nrow(tbl) == 0) return(NULL)
+  keep <- tbl %>% dplyr::rename(Feature = feature) %>% dplyr::mutate(mean_abs_shap = as.numeric(mean_abs_shap)) %>%
+          dplyr::arrange(desc(mean_abs_shap)) %>% dplyr::slice(1:min(10, dplyr::n()))
+  ggplot(keep, aes(reorder(Feature, mean_abs_shap), mean_abs_shap)) + geom_col() + coord_flip() +
+    labs(x = NULL, y = "Mean |SHAP|", title = title_txt) + theme_minimal(base_size = 14)
+}
+if (nz(get2(xai,"shap_rf_importance")))  print(plot_imp_tbl(xai$shap_rf_importance,"RF SHAP Importance"))
+if (nz(get2(xai,"shap_xgb_importance"))) print(plot_imp_tbl(xai$shap_xgb_importance,"XGB SHAP Importance"))
+```
+
+```{r pdp-ice}
+pdp_rf  <- get2(xai, "pdp_rf"); pdp_xgb <- get2(xai, "pdp_xgb"); pdp_feat <- get2(st, "pdp_feature", "Selected Feature")
+if (nz(pdp_rf))  print(plot(pdp_rf)  + ggtitle(paste("RF PDP+ICE —",  pdp_feat)) + theme_minimal(base_size = 14))
+if (nz(pdp_xgb)) print(plot(pdp_xgb) + ggtitle(paste("XGB PDP+ICE —", pdp_feat)) + theme_minimal(base_size = 14))
+```
+
+```{r lime}
+lime_rf  <- get2(ar, "lime_rf_plot"); lime_xgb <- get2(ar, "lime_xgb_plot")
+if (nz(lime_rf))  print(lime_rf)
+if (nz(lime_xgb)) print(lime_xgb)
+```
+
+---
+
+# Session Info
+
+```{r session}
+sessionInfo()
+```
