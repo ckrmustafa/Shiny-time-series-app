@@ -8,6 +8,9 @@ This repository contains an interactive **Shiny dashboard** for time series anal
 - **server.R** – Contains the server-side logic, model training, and report generation.
 - **report_template.Rmd** – R Markdown template used to generate reports from the app.
 
+## Citation
+https://doi.org/10.5281/zenodo.17114914
+
 ## Installation
 Clone or download the repository, then install required R packages:
 
@@ -18,3 +21,4 @@ pkgs <- c("shiny","shinydashboard","shinyjs","writexl","forecast","ggplot2","gri
           "rpart","nnet","xgboost","DT","rpart.plot","partykit","rmarkdown",
           "tseries","jsonlite","corrplot","Boruta","DALEX","lime","iml","shapviz")
 install.packages(setdiff(pkgs, rownames(installed.packages())))
+
